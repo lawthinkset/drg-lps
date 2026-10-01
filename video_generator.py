@@ -1,11 +1,9 @@
 """
-Lofi Bingoo YouTube Long-Form Video Generator
-- Detects video resolution and auto-upscales 720p to 1080p Full HD (Lanczos + Unsharp)
-- Automatically removes Google Flow / Gemini AI watermarks in the bottom-right corner
-- Builds seamless ping-pong loop blocks (Forward + Reverse = 100% smooth continuous flow)
-- Synchronizes and loops high-fidelity lofi audio tracks with smooth fade-out
-- Automatically utilizes NVIDIA NVENC GPU hardware acceleration with libx264 CPU fallback
-- Supports configurable duration (e.g., 20-minute test or 1-hour full video)
+Dragon Lapps Video Processor
+- Watermark / Logo removal in bottom-right corner using high-precision astroid geometry & inpainting
+- Auto-upscale to 1080p Full HD (Lanczos + Unsharp) if needed
+- Preserves original video duration (NO LOOPING, e.g. 10s video)
+- Preserves native audio track
 """
 import os
 import sys
@@ -45,9 +43,8 @@ def is_nvenc_available():
 
 def inpaint_video_watermark(input_video, output_video):
     """
-    Removes Google Flow / Gemini AI 4-pointed star watermarks across all frames
+    Removes Google Flow / Gemini AI / AI logo watermarks across all frames
     using high-precision astroid geometry and Telea inpainting.
-    Ultra fast: runs at 100+ fps (~2 seconds for a 10s loop).
     """
     cap = cv2.VideoCapture(str(input_video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
@@ -95,136 +92,85 @@ def inpaint_video_watermark(input_video, output_video):
     return output_video
 
 
-def get_video_filter_chain(width, height, upscale_to_1080p=True, apply_color_grade=True):
+def process_dragon_video(input_video, output_path, remove_watermark=True, upscale_to_1080p=True):
+    """
+    Processes dragon animation video without looping:
+    1. Removes bottom-right logo / watermark via inpainting
+    2. Upscales to 1080p Full HD (if needed)
+    3. Preserves original duration (e.g. 10 seconds) and native audio track
+    """
+    print("\n" + "=" * 60)
+    print("PROCESSING DRAGON ANIMATION VIDEO (NO LOOP - NATIVE DURATION)")
+    print("=" * 60)
+    print(f"  Input: {os.path.basename(input_video)}")
+    print(f"  Output: {output_path}")
+
+    w, h, duration = get_media_info(input_video)
+    print(f"  Resolution: {w}x{h} | Duration: {duration:.2f}s")
+
+    temp_inpaint = os.path.join(SCRIPT_DIR, "temp_inpaint.mp4")
+
+    source_video = input_video
+    if remove_watermark:
+        print("[VIDEO] Removing logo / watermark via astroid inpainting...")
+        inpaint_video_watermark(input_video, temp_inpaint)
+        source_video = temp_inpaint
+
+    # Video filters for upscaling
     filters = []
-
-    # 1. 3D LUT Cinematic Lofi Color Grading
-    lut_path = os.path.join(SCRIPT_DIR, "assets", "luts", "lofi_cinematic.cube")
-    if apply_color_grade and os.path.exists(lut_path):
-        print("[VIDEO] Applying Cinematic 3D LUT color grading (warm cozy aesthetic)...")
-        safe_lut = lut_path.replace("\\", "/").replace(":", "\\:")
-        filters.append(f"lut3d=file='{safe_lut}':interp=tetrahedral")
-
-    # 2. High Quality 1080p Upscaling (if input is 720p or lower)
-    if upscale_to_1080p and (width < 1920 or height < 1080):
-        print(f"[VIDEO] Auto-upscaling from {width}x{height} to 1920x1080 Full HD (Lanczos + Unsharp)...")
+    if upscale_to_1080p and (w < 1920 or h < 1080):
+        print(f"[VIDEO] Auto-upscaling from {w}x{h} to 1920x1080 Full HD (Lanczos + Unsharp)...")
         filters.append("scale=1920:1080:flags=lanczos+accurate_rnd")
         filters.append("unsharp=5:5:0.8:5:5:0.0")
 
-    return ",".join(filters) if filters else "null"
+    vf_str = ",".join(filters) if filters else "null"
 
-
-def build_lofi_longform_video(input_video, input_audio, output_path, duration_seconds=3600, remove_watermark=True, upscale_to_1080p=True, apply_color_grade=True):
-    """
-    Main entry point to render 1080p HD Lofi Music video with watermark removal,
-    cinematic 3D LUT color grading, and seamless ping-pong loop.
-    """
-    print("\n" + "=" * 60)
-    print("RENDERING LOFI BINGOO VIDEO (WATERMARK REMOVAL & 3D LUT ACTIVE)")
-    print("=" * 60)
-    print(f"  Input Video: {os.path.basename(input_video)}")
-    print(f"  Input Audio: {os.path.basename(input_audio)}")
-    print(f"  Target Duration: {duration_seconds}s ({duration_seconds / 60:.1f} mins)")
-    print(f"  Output Path: {output_path}")
-
-    temp_inpaint = os.path.join(SCRIPT_DIR, "temp_inpaint.mp4")
-    temp_clean = os.path.join(SCRIPT_DIR, "temp_clean.mp4")
-    temp_block = os.path.join(SCRIPT_DIR, "temp_block.mp4")
-
-    # Step 1: Remove watermark via Astroid inpaint & Upscale + Color Grade
-    source_to_upscale = input_video
-    if remove_watermark:
-        print("[VIDEO] Applying high-precision astroid inpainting to remove Google Flow watermark...")
-        inpaint_video_watermark(input_video, temp_inpaint)
-        source_to_upscale = temp_inpaint
-
-    w, h, orig_dur = get_media_info(source_to_upscale)
-    vf_arg = get_video_filter_chain(w, h, upscale_to_1080p=upscale_to_1080p, apply_color_grade=apply_color_grade)
-
-    cmd_clean = [
-        "ffmpeg", "-y",
-        "-i", str(source_to_upscale),
-        "-vf", vf_arg,
-        "-c:v", "libx264", "-crf", "15", "-preset", "fast", "-an",
-        temp_clean
-    ]
-    subprocess.run(cmd_clean, check=True)
-
-    # Step 2: Create ping-pong loop block (Forward + Reverse = seamless continuous flow)
-    cmd_block = [
-        "ffmpeg", "-y",
-        "-i", temp_clean,
-        "-filter_complex", "[0:v]reverse[v_rev];[0:v][v_rev]concat=n=2:v=1:a=0[v_out]",
-        "-map", "[v_out]",
-        "-c:v", "libx264", "-crf", "15", "-preset", "fast",
-        temp_block
-    ]
-    subprocess.run(cmd_block, check=True)
-
-    _, _, block_dur = get_media_info(temp_block)
-    loop_count = int(duration_seconds / max(block_dur, 1)) + 2
-    fade_start = max(0, duration_seconds - 4)
-
-    # Check encoder
+    # Codec selection
     if is_nvenc_available():
-        print("[VIDEO] Using NVIDIA NVENC Hardware Acceleration...")
-        video_codec_args = ["-c:v", "h264_nvenc", "-cq", "19", "-b:v", "14M"]
+        vcodec_args = ["-c:v", "h264_nvenc", "-cq", "19", "-b:v", "14M"]
     else:
-        print("[VIDEO] Using CPU libx264 encoder (veryfast preset)...")
-        video_codec_args = ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast"]
+        vcodec_args = ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast"]
 
-    # Step 3: Full assemble with audio loop and fade out
-    print("[VIDEO] Assembling full 1080p video with audio synchronization...")
-    cmd_full = [
+    # Assemble final video with native audio from original video
+    cmd = [
         "ffmpeg", "-y",
-        "-stream_loop", str(loop_count), "-i", temp_block,
-        "-stream_loop", "-1", "-i", str(input_audio),
-        "-filter_complex", (
-            f"[0:v]trim=0:{duration_seconds},setpts=PTS-STARTPTS,fade=t=out:st={fade_start}:d=4[v_out];"
-            f"[1:a]atrim=0:{duration_seconds},asetpts=PTS-STARTPTS,afade=t=out:st={fade_start}:d=4[a_out]"
-        ),
-        "-map", "[v_out]",
-        "-map", "[a_out]",
-        *video_codec_args,
-        "-c:a", "aac", "-b:a", "320k",
+        "-i", str(source_video),
+        "-i", str(input_video),
+        "-vf", vf_str,
+        "-map", "0:v:0",
+        "-map", "1:a?",
+        *vcodec_args,
+        "-c:a", "aac", "-b:a", "192k",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         str(output_path)
     ]
 
+    print(f"[VIDEO] Rendering 1080p output ({duration:.1f}s)...")
     try:
-        subprocess.run(cmd_full, check=True)
+        subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
-        print("[!] NVENC failed or unavailable, falling back to libx264 CPU encoder...")
-        cmd_full_cpu = [
+        cmd_cpu = [
             "ffmpeg", "-y",
-            "-stream_loop", str(loop_count), "-i", temp_block,
-            "-stream_loop", "-1", "-i", str(input_audio),
-            "-filter_complex", (
-                f"[0:v]trim=0:{duration_seconds},setpts=PTS-STARTPTS,fade=t=out:st={fade_start}:d=4[v_out];"
-                f"[1:a]atrim=0:{duration_seconds},asetpts=PTS-STARTPTS,afade=t=out:st={fade_start}:d=4[a_out]"
-            ),
-            "-map", "[v_out]",
-            "-map", "[a_out]",
+            "-i", str(source_video),
+            "-i", str(input_video),
+            "-vf", vf_str,
+            "-map", "0:v:0",
+            "-map", "1:a?",
             "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
-            "-c:a", "aac", "-b:a", "320k",
+            "-c:a", "aac", "-b:a", "192k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             str(output_path)
         ]
-        subprocess.run(cmd_full_cpu, check=True)
+        subprocess.run(cmd_cpu, check=True)
 
-    # Cleanup temp
-    for t in [temp_inpaint, temp_clean, temp_block]:
-        if os.path.exists(t):
-            try:
-                os.remove(t)
-            except Exception:
-                pass
+    # Cleanup temporary file
+    if os.path.exists(temp_inpaint):
+        try:
+            os.remove(temp_inpaint)
+        except Exception:
+            pass
 
-    print(f"[SUCCESS] 1080p Video rendered successfully (Watermark Removed): {output_path}")
+    print(f"[SUCCESS] Dragon animation video ready: {output_path}")
     return True
-
-
-# Alias for cross-module compatibility
-build_tropical_longform_video = build_lofi_longform_video

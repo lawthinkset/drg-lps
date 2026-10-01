@@ -1,15 +1,10 @@
 """
-Google Drive Integration Module for Lofi Bingoo
-Fetches:
-1. Video Loops (MP4) from GOOGLE_DRIVE_VIDEO_FOLDER_ID
-2. Audio Tracks (MP3/WAV) from GOOGLE_DRIVE_AUDIO_FOLDER_ID
-3. Thumbnail Images (JPG/PNG) from GOOGLE_DRIVE_IMAGE_FOLDER_ID
-
+Google Drive Integration Module for Dragon Lapps
+Downloads Dragon Animation Videos from the single Dragon Google Drive folder.
 Supports:
-- Unpublished track priority
-- Infinite circulation mode (Weighted Least-Recently-Used selection)
-- Dynamic remixing across video, audio, and thumbnail assets
-- Local folder fallback (input_videos, input_audio, input_images)
+- Unpublished video priority
+- Weighted Least-Recently-Used (LRU) selection for infinite circulation
+- Local input_videos folder fallback
 """
 import os
 import io
@@ -25,14 +20,14 @@ if sys.platform == "win32":
 
 load_dotenv()
 
-GOOGLE_DRIVE_VIDEO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_VIDEO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_VIDEOS_FOLDER_ID", "10D0j0siAtZC2zBXJvcJ76TdMNxQLVWQD"))
-GOOGLE_DRIVE_AUDIO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_AUDIO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_MUSIC_FOLDER_ID", "19zTCpkmKpZwUm8j8gnvfHZqVJqfwEz9I"))
-GOOGLE_DRIVE_IMAGE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_IMAGE_FOLDER_ID", os.getenv("GOOGLE_DRIVE_IMAGES_FOLDER_ID", "10D0j0siAtZC2zBXJvcJ76TdMNxQLVWQD"))
-GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "service_account.json")
+GOOGLE_DRIVE_FOLDER_ID = (
+    os.getenv("GOOGLE_DRIVE_FOLDER_ID") or
+    os.getenv("GOOGLE_DRIVE_VIDEO_FOLDER_ID") or
+    "10D0j0siAtZC2zBXJvcJ76TdMNxQLVWQD"
+).strip()
 
+GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "service_account.json")
 LOCAL_VIDEO_DIR = os.getenv("LOCAL_VIDEO_DIR", "input_videos")
-LOCAL_AUDIO_DIR = os.getenv("LOCAL_AUDIO_DIR", "input_audio")
-LOCAL_IMAGE_DIR = os.getenv("LOCAL_IMAGE_DIR", "input_images")
 PUBLISHED_LOG = "published_videos.json"
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -72,7 +67,7 @@ def get_drive_service():
 
 
 def list_files_in_folder(folder_id, extensions=None):
-    """List non-trashed files inside a Google Drive folder."""
+    """List non-trashed files inside the Google Drive folder."""
     if not folder_id or folder_id.startswith("your_"):
         return []
     service = get_drive_service()
@@ -100,7 +95,7 @@ def list_files_in_folder(folder_id, extensions=None):
 
 
 def download_file(file_id, dest_path):
-    """Downloads a single file from Google Drive."""
+    """Downloads a single video file from Google Drive."""
     try:
         from googleapiclient.http import MediaIoBaseDownload
     except ImportError:
@@ -123,48 +118,30 @@ def download_file(file_id, dest_path):
 
 
 def get_usage_counts():
-    """
-    Returns usage counts for audio, video, and image assets from published history.
-    """
-    aud_counts = {}
+    """Returns usage counts for published video files."""
     vid_counts = {}
-    img_counts = {}
     if os.path.exists(PUBLISHED_LOG):
         try:
             with open(PUBLISHED_LOG, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for item in data:
-                    a = (item.get("audio_file") or item.get("audio_name") or item.get("music_name") or "").strip().lower()
                     v = (item.get("video_file") or "").strip().lower()
-                    i = (item.get("image_file") or "").strip().lower()
-                    if a:
-                        aud_counts[a] = aud_counts.get(a, 0) + 1
                     if v:
                         vid_counts[v] = vid_counts.get(v, 0) + 1
-                    if i:
-                        img_counts[i] = img_counts.get(i, 0) + 1
         except Exception:
             pass
-    return aud_counts, vid_counts, img_counts
+    return vid_counts
 
 
 def pick_weighted_lru(candidates, usage_counts, key_fn, allow_repost=True):
-    """
-    Selects an asset with strict priority on unseen/unpublished items.
-    Once all items have been published at least once, uses an Exponential Decay
-    Weighted Least-Recently-Used (LRU) algorithm: weight = 1000 // (3 ** count)
-    This guarantees perpetual circulation, prevents repeating recent tracks,
-    and enables infinite recycling forever across music, video, and thumbnails.
-    """
+    """Selects video with strict priority on unpublished items, then weighted LRU."""
     if not candidates:
         return None, False
 
-    # 1. Unused / Unpublished first
     unseen = [c for c in candidates if key_fn(c).strip().lower() not in usage_counts]
     if unseen:
         return unseen[0], False
 
-    # 2. Circulation mode with Exponential Decay LRU weighting
     if allow_repost:
         weights = [
             max(1, 1000 // (3 ** min(usage_counts.get(key_fn(c).strip().lower(), 0), 6)))
@@ -175,107 +152,48 @@ def pick_weighted_lru(candidates, usage_counts, key_fn, allow_repost=True):
     return None, False
 
 
-def fetch_assets_triplet(allow_repost=True):
+def fetch_dragon_video(allow_repost=True):
     """
-    Fetches ONE video, ONE audio track, and ONE thumbnail image.
-    Supports Infinite Circulation Mode with Weighted Least-Recently-Used selection
-    across Google Drive and local cache.
+    Fetches ONE dragon animation video from Google Drive or local input_videos.
+    Returns: (video_path, is_repost)
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     vid_dir = os.path.join(script_dir, LOCAL_VIDEO_DIR)
-    aud_dir = os.path.join(script_dir, LOCAL_AUDIO_DIR)
-    img_dir = os.path.join(script_dir, LOCAL_IMAGE_DIR)
-
     os.makedirs(vid_dir, exist_ok=True)
-    os.makedirs(aud_dir, exist_ok=True)
-    os.makedirs(img_dir, exist_ok=True)
 
     drive_service = get_drive_service()
-    drive_ready = (drive_service is not None) and bool(GOOGLE_DRIVE_AUDIO_FOLDER_ID) and not GOOGLE_DRIVE_AUDIO_FOLDER_ID.startswith("your_")
+    drive_ready = (drive_service is not None) and bool(GOOGLE_DRIVE_FOLDER_ID) and not GOOGLE_DRIVE_FOLDER_ID.startswith("your_")
 
     if drive_ready:
-        print("[DRIVE] Querying Google Drive folders for Lofi Bingoo assets...")
-        v_drive = list_files_in_folder(GOOGLE_DRIVE_VIDEO_FOLDER_ID, extensions=[".mp4", ".mov", ".mkv"])
-        a_drive = list_files_in_folder(GOOGLE_DRIVE_AUDIO_FOLDER_ID, extensions=[".mp3", ".wav", ".flac"])
-        i_drive = list_files_in_folder(GOOGLE_DRIVE_IMAGE_FOLDER_ID, extensions=[".jpg", ".jpeg", ".png", ".webp"])
+        print(f"[DRIVE] Querying Dragon Google Drive folder ({GOOGLE_DRIVE_FOLDER_ID})...")
+        v_drive = list_files_in_folder(GOOGLE_DRIVE_FOLDER_ID, extensions=[".mp4", ".mov", ".mkv"])
     else:
-        v_drive, a_drive, i_drive = [], [], []
+        v_drive = []
 
     local_vids = sorted(glob.glob(os.path.join(vid_dir, "*.mp4")) + glob.glob(os.path.join(vid_dir, "*.mov")))
-    local_auds = sorted(glob.glob(os.path.join(aud_dir, "*.mp3")) + glob.glob(os.path.join(aud_dir, "*.wav")))
-    local_imgs = sorted(glob.glob(os.path.join(img_dir, "*.jpg")) + glob.glob(os.path.join(img_dir, "*.png")) + glob.glob(os.path.join(img_dir, "*.jpeg")))
+    vid_counts = get_usage_counts()
 
-    aud_counts, vid_counts, img_counts = get_usage_counts()
-
-    # 1. Resolve Video Loop with Weighted LRU
     sel_video_path = None
+    is_repost = False
+
     if v_drive:
-        chosen_v, _ = pick_weighted_lru(v_drive, vid_counts, lambda x: x["name"], allow_repost=True)
+        chosen_v, is_repost = pick_weighted_lru(v_drive, vid_counts, lambda x: x["name"], allow_repost=allow_repost)
         if chosen_v:
             dest_v = os.path.join(vid_dir, chosen_v["name"])
             if not os.path.exists(dest_v):
-                print(f"[DRIVE] Downloading video loop: {chosen_v['name']}...")
+                print(f"[DRIVE] Downloading dragon animation video: {chosen_v['name']}...")
                 download_file(chosen_v["id"], dest_v)
             sel_video_path = dest_v
     elif local_vids:
-        sel_video_path, _ = pick_weighted_lru(local_vids, vid_counts, os.path.basename, allow_repost=True)
+        sel_video_path, is_repost = pick_weighted_lru(local_vids, vid_counts, os.path.basename, allow_repost=allow_repost)
 
     if not sel_video_path:
-        print("[ERROR] No videos found in Drive or local input_videos folder.")
-        return None, None, None, False
+        print("[ERROR] No dragon animation videos found in Google Drive or local input_videos folder.")
+        return None, False
 
-    # 2. Resolve Audio (Music) with Weighted LRU
-    sel_audio_path = None
-    is_repost = False
-    if a_drive:
-        chosen_a, is_repost = pick_weighted_lru(a_drive, aud_counts, lambda x: x["name"], allow_repost=allow_repost)
-        if chosen_a:
-            dest = os.path.join(aud_dir, chosen_a["name"])
-            if not os.path.exists(dest):
-                print(f"[DRIVE] Downloading audio track: {chosen_a['name']}...")
-                download_file(chosen_a["id"], dest)
-            sel_audio_path = dest
-    elif local_auds:
-        sel_audio_path, is_repost = pick_weighted_lru(local_auds, aud_counts, os.path.basename, allow_repost=allow_repost)
-
-    # Fallback: Extract high-quality audio from the video file itself if no standalone audio track found
-    if not sel_audio_path and sel_video_path:
-        stem = os.path.splitext(os.path.basename(sel_video_path))[0]
-        extracted_audio = os.path.join(aud_dir, f"{stem}_audio.aac")
-        import subprocess
-        print(f"[AUDIO] Extracting native audio track from {os.path.basename(sel_video_path)}...")
-        sub_res = subprocess.run(["ffmpeg", "-y", "-i", sel_video_path, "-vn", "-acodec", "copy", extracted_audio], capture_output=True)
-        if sub_res.returncode == 0 and os.path.exists(extracted_audio):
-            sel_audio_path = extracted_audio
-        else:
-            # Fallback re-encode if copy fails
-            sub_res2 = subprocess.run(["ffmpeg", "-y", "-i", sel_video_path, "-vn", "-c:a", "aac", "-b:a", "192k", extracted_audio], capture_output=True)
-            if sub_res2.returncode == 0 and os.path.exists(extracted_audio):
-                sel_audio_path = extracted_audio
-
-    if not sel_audio_path:
-        print("[ERROR] No audio tracks found in Drive, local input_audio folder, or within video.")
-        return None, None, None, False
-
-    # 3. Resolve Thumbnail Image with Weighted LRU
-    sel_image_path = None
-    if i_drive:
-        chosen_i, _ = pick_weighted_lru(i_drive, img_counts, lambda x: x["name"], allow_repost=True)
-        if chosen_i:
-            dest_i = os.path.join(img_dir, chosen_i["name"])
-            if not os.path.exists(dest_i):
-                print(f"[DRIVE] Downloading thumbnail background: {chosen_i['name']}...")
-                download_file(chosen_i["id"], dest_i)
-            sel_image_path = dest_i
-    elif local_imgs:
-        sel_image_path, _ = pick_weighted_lru(local_imgs, img_counts, os.path.basename, allow_repost=True)
-
-    return sel_video_path, sel_audio_path, sel_image_path, is_repost
+    return sel_video_path, is_repost
 
 
 if __name__ == "__main__":
-    v, a, i, rep = fetch_assets_triplet()
-    print(f"Video: {v}")
-    print(f"Audio: {a}")
-    print(f"Image: {i}")
-    print(f"Is Repost: {rep}")
+    v, rep = fetch_dragon_video()
+    print(f"Selected Video: {v} (repost: {rep})")

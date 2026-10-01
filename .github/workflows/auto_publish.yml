@@ -1,4 +1,4 @@
-name: Auto Publish Dragon World Animation Videos to YouTube & Facebook
+name: Auto Publish Dragon Animation Videos to YouTube & Facebook
 
 on:
   schedule:
@@ -12,13 +12,11 @@ permissions:
 jobs:
   publish-dragon-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
 
     env:
       CHANNEL_NAME: Dragon Lapps
-      GOOGLE_DRIVE_VIDEO_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_VIDEO_FOLDER_ID }}
-      GOOGLE_DRIVE_AUDIO_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_AUDIO_FOLDER_ID }}
-      GOOGLE_DRIVE_IMAGE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_IMAGE_FOLDER_ID }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
       GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -45,20 +43,20 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install FFmpeg & Fonts
+      - name: Install FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-freefont-ttf
+          sudo apt-get install -y ffmpeg
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Dragon Lapps automation pipeline (1-Hour 1080p HD)
+      - name: Run Dragon Lapps automation pipeline
         run: |
-          echo "🐉 Starting Dragon Lapps 1-Hour (3600s) 1080p Full HD dragon animation publishing pipeline..."
-          python auto_pipeline.py --duration 3600
+          echo "🐉 Starting Dragon Lapps publishing pipeline..."
+          python auto_pipeline.py
 
       - name: Commit published videos log
         if: always()
