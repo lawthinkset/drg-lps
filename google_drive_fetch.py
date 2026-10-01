@@ -25,9 +25,9 @@ if sys.platform == "win32":
 
 load_dotenv()
 
-GOOGLE_DRIVE_VIDEO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_VIDEO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_VIDEOS_FOLDER_ID", "1gGc9iyB7It8gWhahl4NgmoWjvXxON94a"))
-GOOGLE_DRIVE_AUDIO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_AUDIO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_MUSIC_FOLDER_ID", "1hJAlzQm6xM14cZWNUmQ9cAulR5KIi2J2"))
-GOOGLE_DRIVE_IMAGE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_IMAGE_FOLDER_ID", os.getenv("GOOGLE_DRIVE_IMAGES_FOLDER_ID", "1VJHTzLUvoGRf6JxYS_xaBkB43OvDZdm9"))
+GOOGLE_DRIVE_VIDEO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_VIDEO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_VIDEOS_FOLDER_ID", "10D0j0siAtZC2zBXJvcJ76TdMNxQLVWQD"))
+GOOGLE_DRIVE_AUDIO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_AUDIO_FOLDER_ID", os.getenv("GOOGLE_DRIVE_MUSIC_FOLDER_ID", "19zTCpkmKpZwUm8j8gnvfHZqVJqfwEz9I"))
+GOOGLE_DRIVE_IMAGE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_IMAGE_FOLDER_ID", os.getenv("GOOGLE_DRIVE_IMAGES_FOLDER_ID", "10D0j0siAtZC2zBXJvcJ76TdMNxQLVWQD"))
 GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "service_account.json")
 
 LOCAL_VIDEO_DIR = os.getenv("LOCAL_VIDEO_DIR", "input_videos")
@@ -207,25 +207,7 @@ def fetch_assets_triplet(allow_repost=True):
 
     aud_counts, vid_counts, img_counts = get_usage_counts()
 
-    # 1. Resolve Audio (Music) with Weighted LRU
-    sel_audio_path = None
-    is_repost = False
-    if a_drive:
-        chosen_a, is_repost = pick_weighted_lru(a_drive, aud_counts, lambda x: x["name"], allow_repost=allow_repost)
-        if chosen_a:
-            dest = os.path.join(aud_dir, chosen_a["name"])
-            if not os.path.exists(dest):
-                print(f"[DRIVE] Downloading audio track: {chosen_a['name']}...")
-                download_file(chosen_a["id"], dest)
-            sel_audio_path = dest
-    elif local_auds:
-        sel_audio_path, is_repost = pick_weighted_lru(local_auds, aud_counts, os.path.basename, allow_repost=allow_repost)
-
-    if not sel_audio_path:
-        print("[ERROR] No audio tracks found in Drive or local input_audio folder.")
-        return None, None, None, False
-
-    # 2. Resolve Video Loop with Weighted LRU
+    # 1. Resolve Video Loop with Weighted LRU
     sel_video_path = None
     if v_drive:
         chosen_v, _ = pick_weighted_lru(v_drive, vid_counts, lambda x: x["name"], allow_repost=True)
@@ -240,6 +222,39 @@ def fetch_assets_triplet(allow_repost=True):
 
     if not sel_video_path:
         print("[ERROR] No videos found in Drive or local input_videos folder.")
+        return None, None, None, False
+
+    # 2. Resolve Audio (Music) with Weighted LRU
+    sel_audio_path = None
+    is_repost = False
+    if a_drive:
+        chosen_a, is_repost = pick_weighted_lru(a_drive, aud_counts, lambda x: x["name"], allow_repost=allow_repost)
+        if chosen_a:
+            dest = os.path.join(aud_dir, chosen_a["name"])
+            if not os.path.exists(dest):
+                print(f"[DRIVE] Downloading audio track: {chosen_a['name']}...")
+                download_file(chosen_a["id"], dest)
+            sel_audio_path = dest
+    elif local_auds:
+        sel_audio_path, is_repost = pick_weighted_lru(local_auds, aud_counts, os.path.basename, allow_repost=allow_repost)
+
+    # Fallback: Extract high-quality audio from the video file itself if no standalone audio track found
+    if not sel_audio_path and sel_video_path:
+        stem = os.path.splitext(os.path.basename(sel_video_path))[0]
+        extracted_audio = os.path.join(aud_dir, f"{stem}_audio.aac")
+        import subprocess
+        print(f"[AUDIO] Extracting native audio track from {os.path.basename(sel_video_path)}...")
+        sub_res = subprocess.run(["ffmpeg", "-y", "-i", sel_video_path, "-vn", "-acodec", "copy", extracted_audio], capture_output=True)
+        if sub_res.returncode == 0 and os.path.exists(extracted_audio):
+            sel_audio_path = extracted_audio
+        else:
+            # Fallback re-encode if copy fails
+            sub_res2 = subprocess.run(["ffmpeg", "-y", "-i", sel_video_path, "-vn", "-c:a", "aac", "-b:a", "192k", extracted_audio], capture_output=True)
+            if sub_res2.returncode == 0 and os.path.exists(extracted_audio):
+                sel_audio_path = extracted_audio
+
+    if not sel_audio_path:
+        print("[ERROR] No audio tracks found in Drive, local input_audio folder, or within video.")
         return None, None, None, False
 
     # 3. Resolve Thumbnail Image with Weighted LRU
