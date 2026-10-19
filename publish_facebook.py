@@ -1,186 +1,127 @@
 """
-Facebook Page Video Upload Script for Dragon Lapps
-Uses Facebook Graph API to upload Dragon World Animation videos to the Dragon Lapps Facebook Page.
-Supports chunked resumable upload for large video files.
+Facebook Video Direct Publisher - STRICTLY 1 SINGLE META API CALL
+Direct multipart upload to Meta Graph Video API endpoint.
+Publishes directly to Facebook Page feed in exactly 1 HTTP request.
+Zero chunking sessions, zero status polling loops, zero comment retries.
 """
+
 import os
 import sys
 import json
-import requests
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
-load_dotenv()
-
-GRAPH_API_VERSION = "v20.0"
-
-
-def get_facebook_credentials():
-    """Retrieve Facebook Page ID and Page Access Token from environment."""
-    page_id = (
-        os.getenv('FB_PAGE_ID') or
-        os.getenv('FACEBOOK_PAGE_ID') or
-        os.getenv('DRAGON_LAPPS_FB_PAGE_ID', '')
-    ).strip()
-
-    access_token = (
-        os.getenv('FB_PAGE_ACCESS_TOKEN') or
-        os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN') or
-        os.getenv('DRAGON_LAPPS_FB_PAGE_ACCESS_TOKEN', '')
-    ).strip()
-
-    def mask(s):
-        return f"{s[:4]}...{s[-4:]}" if s and len(s) > 8 else ("PRESENT" if s else "MISSING")
-
-    print(f"[facebook] Page ID: {mask(page_id)}")
-    print(f"[facebook] Access Token: {'PRESENT (len=' + str(len(access_token)) + ')' if access_token else 'MISSING'}")
-
-    if not page_id or not access_token:
-        raise ValueError(
-            "Missing Facebook credentials! Set these environment variables or GitHub Secrets:\n"
-            "  - FB_PAGE_ID (your Dragon Lapps Facebook Page ID)\n"
-            "  - FB_PAGE_ACCESS_TOKEN (your Dragon Lapps Facebook Page Access Token)"
-        )
-
-    return page_id, access_token
+for env_candidate in [Path(".env"), Path("../.env"), Path(__file__).resolve().parent / ".env"]:
+    if env_candidate.exists():
+        load_dotenv(dotenv_path=env_candidate, override=True)
+        break
+else:
+    load_dotenv()
 
 
-def upload_video_resumable(video_path, title, description, page_id, access_token):
+def safe_print(msg: str):
+    try:
+        print(msg)
+    except Exception:
+        print(msg.encode("ascii", "replace").decode("ascii"))
+
+
+def publish_to_facebook(video_path, title, description, thumbnail_path=None):
     """
-    Upload video using Meta Graph API chunked resumable upload protocol.
-    Recommended for reliable uploads of video files of any size.
+    Publishes video to Facebook Page in EXACTLY ONE Meta Graph API call.
+    Single direct multipart POST to https://graph-video.facebook.com/v21.0/{page_id}/videos
     """
-    file_size = os.path.getsize(video_path)
-    print(f"[facebook] Starting resumable upload for '{title}' ({file_size / (1024 * 1024):.2f} MB)...")
+    import requests
 
-    # Phase 1: START
-    start_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{page_id}/videos"
-    start_payload = {
-        "upload_phase": "start",
-        "file_size": file_size,
+    access_token = os.getenv("FACEBOOK_ACCESS_TOKEN") or os.getenv("FB_ACCESS_TOKEN")
+    page_id = os.getenv("FACEBOOK_PAGE_ID") or os.getenv("FB_PAGE_ID")
+
+    if not access_token or not page_id:
+        safe_print("[Facebook] Notice: FACEBOOK_ACCESS_TOKEN or FACEBOOK_PAGE_ID not set. Skipping.")
+        return None
+
+    vid_path = Path(video_path)
+    if not vid_path.exists():
+        safe_print(f"[Facebook] Error: Video file not found: {video_path}")
+        return None
+
+    file_size_mb = vid_path.stat().st_size / (1024 * 1024)
+
+    safe_print("\n" + "=" * 60)
+    safe_print("FACEBOOK DIRECT PUBLISH (STRICTLY 1 META API CALL)")
+    safe_print(f"[Facebook] Page ID: {page_id}")
+    safe_print(f"[Facebook] Video: {vid_path.name} ({file_size_mb:.2f} MB)")
+    safe_print(f"[Facebook] Title: {str(title)[:70]}")
+    safe_print("=" * 60)
+
+    upload_url = f"https://graph-video.facebook.com/v21.0/{page_id}/videos"
+
+    data = {
+        "title": str(title)[:100],
+        "description": str(description)[:5000],
+        "published": "true",
         "access_token": access_token
     }
-    resp = requests.post(start_url, data=start_payload)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Resumable upload START failed ({resp.status_code}): {resp.text}")
 
-    start_data = resp.json()
-    upload_session_id = start_data["upload_session_id"]
-    video_id = start_data.get("video_id")
-    start_offset = int(start_data.get("start_offset", 0))
-    end_offset = int(start_data.get("end_offset", 0))
-
-    # Phase 2: TRANSFER CHUNKS
-    chunk_size = end_offset - start_offset if end_offset > start_offset else (4 * 1024 * 1024)
-    with open(video_path, "rb") as f:
-        while start_offset < file_size:
-            f.seek(start_offset)
-            chunk_data = f.read(chunk_size)
-            if not chunk_data:
-                break
-
-            transfer_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{page_id}/videos"
-            transfer_data = {
-                "upload_phase": "transfer",
-                "upload_session_id": upload_session_id,
-                "start_offset": start_offset,
-                "access_token": access_token
-            }
-            transfer_files = {
-                "video_file_chunk": ("chunk.mp4", chunk_data, "video/mp4")
-            }
-
-            t_resp = requests.post(transfer_url, data=transfer_data, files=transfer_files)
-            if t_resp.status_code != 200:
-                raise RuntimeError(f"Resumable upload TRANSFER failed at offset {start_offset} ({t_resp.status_code}): {t_resp.text}")
-
-            t_data = t_resp.json()
-            new_start = int(t_data.get("start_offset", start_offset + len(chunk_data)))
-            new_end = int(t_data.get("end_offset", new_start + chunk_size))
-            chunk_size = new_end - new_start if new_end > new_start else chunk_size
-
-            pct = min(100, int((new_start / file_size) * 100))
-            print(f"[facebook] Upload progress: {pct}%")
-            start_offset = new_start
-
-    # Phase 3: FINISH
-    print("[facebook] Finalizing video processing with title & description...")
-    finish_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{page_id}/videos"
-    finish_payload = {
-        "upload_phase": "finish",
-        "upload_session_id": upload_session_id,
-        "title": title,
-        "description": description,
-        "access_token": access_token
-    }
-    f_resp = requests.post(finish_url, data=finish_payload)
-    if f_resp.status_code != 200:
-        raise RuntimeError(f"Resumable upload FINISH failed ({f_resp.status_code}): {f_resp.text}")
-
-    result = f_resp.json()
-    final_video_id = result.get("id") or video_id
-    print(f"[facebook] Video uploaded successfully! Video ID: {final_video_id}")
-    print(f"[facebook] Watch URL: https://www.facebook.com/{page_id}/videos/{final_video_id}")
-    return {"id": final_video_id, "success": True, "data": result}
-
-
-def upload_video_direct(video_path, title, description, page_id, access_token):
-    """Fallback single-request multipart upload for standard video files."""
-    print(f"[facebook] Direct uploading: {title}")
-    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{page_id}/videos"
-    payload = {
-        "title": title,
-        "description": description,
-        "access_token": access_token
-    }
-    with open(video_path, "rb") as f:
-        files = {"source": (os.path.basename(video_path), f, "video/mp4")}
-        resp = requests.post(url, data=payload, files=files, timeout=600)
-
-    if resp.status_code != 200:
-        raise RuntimeError(f"Direct video upload failed ({resp.status_code}): {resp.text}")
-
-    data = resp.json()
-    video_id = data.get("id")
-    print(f"[facebook] Uploaded! Video ID: {video_id}")
-    print(f"[facebook] URL: https://www.facebook.com/{page_id}/videos/{video_id}")
-    return data
-
-
-def upload_to_facebook(video_path, title, description):
-    """
-    Upload a video to the Dragon Lapps Facebook Page.
-    Attempts resumable upload first, with automatic fallback to direct multipart upload.
-    """
-    page_id, access_token = get_facebook_credentials()
-
-    if not os.path.exists(video_path):
-        raise FileNotFoundError(f"Video file not found: {video_path}")
+    video_fp = None
+    thumb_fp = None
 
     try:
-        return upload_video_resumable(video_path, title, description, page_id, access_token)
+        video_fp = open(vid_path, "rb")
+        files = {
+            "source": (vid_path.name, video_fp, "video/mp4")
+        }
+
+        if thumbnail_path and Path(thumbnail_path).exists():
+            try:
+                thumb_fp = open(thumbnail_path, "rb")
+                files["thumb"] = (Path(thumbnail_path).name, thumb_fp, "image/jpeg")
+            except Exception:
+                pass
+
+        safe_print("[Facebook] Sending single multipart POST request (API Call 1 of 1)...")
+        res = requests.post(upload_url, data=data, files=files, timeout=600)
+
+        if res.status_code in [200, 201]:
+            res_data = res.json()
+            video_id = res_data.get("id") or res_data.get("video_id")
+            if video_id:
+                safe_print(f"[Facebook] ✅ SUCCESS! Video Published (ID: {video_id})")
+                safe_print(f"[Facebook] URL: https://www.facebook.com/{video_id}")
+                return {
+                    "id": str(video_id),
+                    "video_id": str(video_id),
+                    "status": "success",
+                    "url": f"https://www.facebook.com/{video_id}",
+                    "api_calls_made": 1
+                }
+
+        safe_print(f"[Facebook] [ERROR] Response {res.status_code}: {res.text[:400]}")
+        return None
+
     except Exception as e:
-        print(f"[facebook] Resumable upload encountered issue ({e}), falling back to direct upload...")
-        return upload_video_direct(video_path, title, description, page_id, access_token)
+        safe_print(f"[Facebook] Single-call upload exception: {e}")
+        return None
+    finally:
+        if video_fp:
+            try:
+                video_fp.close()
+            except Exception:
+                pass
+        if thumb_fp:
+            try:
+                thumb_fp.close()
+            except Exception:
+                pass
 
 
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python publish_facebook.py <video_path> [title] [description]")
-        sys.exit(1)
-
-    video_file = sys.argv[1]
-    video_title = sys.argv[2] if len(sys.argv) > 2 else "Dragon Lapps - Epic Dragon World Animation 🐉🔥"
-    video_desc = sys.argv[3] if len(sys.argv) > 3 else "🐉 Witness the epic world of dragons! Fire, magic, and ancient legends await. #dragonlapps #dragon #epicfantasy"
-
-    try:
-        upload_to_facebook(video_file, video_title, video_desc)
-    except Exception as exc:
-        print(f"[facebook] Upload failed: {exc}")
-        sys.exit(1)
+def upload_to_facebook(video_path, description, title="Video", thumbnail_path=None):
+    return publish_to_facebook(video_path, title, description, thumbnail_path)
