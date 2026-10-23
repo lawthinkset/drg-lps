@@ -41,11 +41,27 @@ def publish_to_facebook(video_path, title, description, thumbnail_path=None):
     """
     import requests
 
-    access_token = os.getenv("FACEBOOK_ACCESS_TOKEN") or os.getenv("FB_ACCESS_TOKEN")
-    page_id = os.getenv("FACEBOOK_PAGE_ID") or os.getenv("FB_PAGE_ID")
+    access_token = (
+        os.getenv("FB_PAGE_ACCESS_TOKEN")
+        or os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
+        or os.getenv("FACEBOOK_ACCESS_TOKEN")
+        or os.getenv("FB_ACCESS_TOKEN")
+        or os.getenv("DRAGON_LAPPS_FB_PAGE_ACCESS_TOKEN")
+    )
+    if access_token:
+        access_token = access_token.strip()
+
+    page_id = (
+        os.getenv("FB_PAGE_ID")
+        or os.getenv("FACEBOOK_PAGE_ID")
+        or os.getenv("DRAGON_LAPPS_FB_PAGE_ID")
+        or "1371314622722733"
+    )
+    if page_id:
+        page_id = page_id.strip()
 
     if not access_token or not page_id:
-        safe_print("[Facebook] Notice: FACEBOOK_ACCESS_TOKEN or FACEBOOK_PAGE_ID not set. Skipping.")
+        safe_print("[Facebook] Notice: FB_PAGE_ACCESS_TOKEN or FB_PAGE_ID not set. Skipping.")
         return None
 
     vid_path = Path(video_path)
@@ -95,12 +111,12 @@ def publish_to_facebook(video_path, title, description, thumbnail_path=None):
             video_id = res_data.get("id") or res_data.get("video_id")
             if video_id:
                 safe_print(f"[Facebook] ✅ SUCCESS! Video Published (ID: {video_id})")
-                safe_print(f"[Facebook] URL: https://www.facebook.com/{video_id}")
+                safe_print(f"[Facebook] URL: https://www.facebook.com/{page_id}/videos/{video_id}")
                 return {
                     "id": str(video_id),
                     "video_id": str(video_id),
                     "status": "success",
-                    "url": f"https://www.facebook.com/{video_id}",
+                    "url": f"https://www.facebook.com/{page_id}/videos/{video_id}",
                     "api_calls_made": 1
                 }
 
@@ -123,5 +139,16 @@ def publish_to_facebook(video_path, title, description, thumbnail_path=None):
                 pass
 
 
-def upload_to_facebook(video_path, description, title="Video", thumbnail_path=None):
+def upload_to_facebook(video_path, title="Video", description="", thumbnail_path=None):
     return publish_to_facebook(video_path, title, description, thumbnail_path)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python publish_facebook.py <video_path> [title] [description]")
+        sys.exit(1)
+
+    video_file = sys.argv[1]
+    video_title = sys.argv[2] if len(sys.argv) > 2 else "Dragon Lapps - Epic Dragon World Animation 🐉🔥"
+    video_desc = sys.argv[3] if len(sys.argv) > 3 else "🐉 Witness the epic world of dragons! #dragonlapps #dragon #epicfantasy"
+    upload_to_facebook(video_file, video_title, video_desc)

@@ -214,9 +214,15 @@ def run_pipeline(dry_run=False, video_override=None):
     try:
         from publish_facebook import upload_to_facebook
         print(f"\n[facebook] Uploading to Dragon Lapps Facebook Page...")
-        fb_res = upload_to_facebook(final_video_path, title, desc)
-        fb_video_id = fb_res.get("id")
-        print(f"🎉 SUCCESS! Published to Facebook: {fb_video_id}")
+        fb_res = upload_to_facebook(final_video_path, title=title, description=desc)
+        if isinstance(fb_res, dict):
+            fb_video_id = fb_res.get("id") or fb_res.get("video_id")
+            if fb_video_id:
+                print(f"🎉 SUCCESS! Published to Facebook: {fb_video_id}")
+            else:
+                print(f"[facebook] Upload completed but no video ID returned: {fb_res}")
+        else:
+            print(f"[facebook] Upload skipped or returned non-dict response: {fb_res}")
     except Exception as e_fb:
         print(f"[FACEBOOK NOTE] Facebook upload error: {e_fb}")
 
