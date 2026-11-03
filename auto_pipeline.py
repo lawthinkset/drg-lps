@@ -29,7 +29,7 @@ PUBLISHED_LOG = "published_videos.json"
 ALLOW_REPOST = os.getenv("ALLOW_REPOST", "true").lower() == "true"
 CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Dragon Lapps")
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_API_KEY")
-AI_MODEL = os.getenv("AI_MODEL", "gemini-fast")
+AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-5.4-nano")
 GEN_API = "https://gen.pollinations.ai"
 
 
